@@ -11,6 +11,7 @@ use Carp;
 use strict;
 use warnings;
 use Digest::MD5 'md5_hex';
+use Encode 'encode_utf8';
 
 use URI;
 use JSON;
@@ -305,7 +306,9 @@ sub _get_obj {
 	return if (!$optional_code and !defined $code) or ref $code;
 
 	# Code used as cache key
-	my $cache_code = md5_hex( $code // $data);
+	# encode_utf8 is added for the non-latin strings, e.g. in tags
+	my $cache_code = md5_hex( defined $code ? encode_utf8($code) : $data );
+
 
 	# Returns cached value or creates a new object
 	my $return = $self->_cache($type)->{$cache_code} //= ("API::Instagram::$type")->new( $data );
@@ -340,11 +343,15 @@ sub _get_list {
 	$params->{count} = $count;
 
 	my $request = $self->_request( 'get', $url, $params, $opts );
-	my $data    = $request->{data};
+	
+	#	Return on failed request (it should croak)
+	return [] unless ref $request eq 'HASH';
+	
+	my $data = $request->{data};
 
 	# Keeps requesting if total items is less than requested
 	# and still there is pagination
-	while ( my $pagination = $request->{pagination} ){
+	while ( my $pagination = $request->{pagination} ) {
 
 		last if     @$data >= $count;
 		last unless $pagination->{next_url};
@@ -372,7 +379,7 @@ sub _request {
 	}
 
 	# If URL is not prepared, prepares it
-	unless ( $opts->{prepared_url} ){
+	unless ( $opts->{prepared_url} ) {
 
 		$url =~ s|^/||;
 		$params->{access_token} = $self->access_token;
@@ -385,10 +392,16 @@ sub _request {
 	}
 
 	# For debugging purposes
-	# print "Requesting: $url$/" if $self->_debug;
+	print "Requesting: $url$/" if $self->_debug;
 
 	# Treats response content
 	my $response = $self->_ua->$method( $url, [], $params );
+
+	unless ($response->is_success) {
+		carp $response->status_line();
+		return undef;
+	}
+
 	my $res = decode_json $response->decoded_content;
 
 	# Verifies meta node
@@ -397,8 +410,6 @@ sub _request {
 	# Sometimes there is no {meta} data in response JSON, so we'll check 
 	if (ref $meta eq 'HASH' && $meta->{code} ne '200') {
 		carp "$meta->{error_type}: $meta->{error_message}";
-	} else {
-		carp $response->status_line() unless $response->is_success;
 	}
 
 	$res;
